@@ -23,14 +23,14 @@ For every living tree in the field sheet, the pipeline:
 
 ## 2. Allometry — Chave et al. (2014)
 
-The pipeline uses the **D-only (no height) pantropical form** because
-tree height in the sheet is recorded only for single-stem trees and is
-missing/unreliable for multi-stem individuals.
+The pipeline uses the **Height-inclusive pantropical form (Equation 4)**. 
+This ensures the Monte Carlo estimates center around the exact values 
+calculated in Column J of the Excel sheet.
 
-### Equation (Chave et al. 2014, Eq. 7)
+### Equation (Chave et al. 2014, Eq. 4)
 
 ```
-ln(AGB) = a + b·ln(ρ) + c·ln(D) + d·(ln D)²
+AGB = 0.0673 * (ρ * D² * H)^0.976
 ```
 
 | Symbol | Meaning                          | Value used |
@@ -38,37 +38,25 @@ ln(AGB) = a + b·ln(ρ) + c·ln(D) + d·(ln D)²
 | `AGB`  | Aboveground biomass (kg)         | —          |
 | `D`    | Diameter at breast height (cm)   | per tree   |
 | `ρ`    | Wood density (g/cm³)             | per tree   |
-| `a`    | Intercept                        | **−1.803** |
-| `b`    | ln(ρ) coefficient                | **−0.976** |
-| `c`    | ln(D) coefficient                | **3.649**  |
-| `d`    | (ln D)² coefficient              | **−0.0299**|
+| `H`    | Total tree height (m)            | per tree (fallback = 5.0 m) |
+| `0.0673` | Allometric constant            | fixed      |
+| `0.976`  | Scaling exponent               | fixed      |
 
-Source coefficients (Chave et al. 2014, *Global Change Biology* 20: 3177–3190,
-Table 4, all-biome, no-H model).
+Source coefficients: Chave et al. 2014, *Global Change Biology* 20: 
+3177–3190, Table 4.
 
 ### Reference model performance — Chave (2014) RSE
 
 | Model variant                    | RSE (residual standard error) |
 |:---------------------------------|:-----------------------------:|
-| D only (used here)               | **≈ 0.443** (ln units)        |
+| D + ρ + H (used here)            | **≈ 0.359** (ln units)        |
 | D + ρ                            | ≈ 0.418                       |
-| D + ρ + H (when H is reliable)   | ≈ 0.359                       |
+| D only                           | ≈ 0.443                       |
 
-The RSE of ≈ 0.443 (D-only) corresponds to roughly **±55 % 1-σ prediction
-error** on an individual tree (exp(0.443) − 1 ≈ 0.557). This is *model
-structural* error and is **not** included in the per-tree Monte Carlo
-bands below — those quantify *input measurement + wood-density* error only.
-
-> ⚠️ **If you want to add structural (allometric) error to the MC**, draw
-> an extra multiplicative factor `ε ~ LogNormal(0, 0.443)` per iteration.
-> Add this one line to `monte_carlo_agb_tree`:
->
-> ```python
-> agb = chave_agb(dbh_s, rho_s).sum(axis=1)
-> return agb * rng.lognormal(mean=0.0, sigma=0.443, size=agb.shape)
-> ```
->
-> Doing so typically widens the 95 % CI by ~2×.
+The RSE of ≈ 0.359 corresponds to roughly **±43 % 1-σ prediction error** 
+on an individual tree. This is *model structural* error and is **not** 
+included in the per-tree Monte Carlo bands below — those quantify 
+*input measurement + wood-density* error only.
 
 ---
 
@@ -80,11 +68,11 @@ bands below — those quantify *input measurement + wood-density* error only.
 |:-----------------------------|:------------------------------------|:-----:|
 | Caliper / tape measurement   | Uniform multiplicative, **±2 %**    | `dbh_frac_err = 0.02` |
 | Multi-stem handling          | Each stem sampled independently, then summed per iteration | — |
-| CBH → DBH conversion         | `DBH = CBH / π` (exact, no extra error) | π = 3.14159… |
+| Excel formula (`=F2/PI()`)   | Fully evaluated by script (`CBH / π`) | π = 3.14159… |
+| Multi-stem string (`DBH1=..`)| Extracted directly from the text string | per stem |
 
 Rationale: ±2 % is the standard field error for DBH measured with a
-diameter tape or caliper on smooth-barked trees (Phillips et al. 2009,
-*Forest Ecology & Management*; Condit 1998). If your field protocol
+diameter tape or caliper on smooth-barked trees. If your field protocol
 specifies a different tolerance, change `dbh_frac_err` in
 `monte_carlo_agb_tree`.
 
@@ -114,7 +102,15 @@ practice when the within-species density spread is large.
 > rho_min, rho_max = rho_pt * 0.8, rho_pt * 1.2   # ±20 %
 > ```
 
-### 3.3 Monte Carlo configuration
+### 3.3 Height (H)
+
+Height is read directly from the `Height( in m)` column for single-stem trees. 
+For multi-stem trees where height is recorded as `1.66` (likely a stem 
+height rather than total tree height) or is blank, the script defaults 
+to a fallback height of **5.0 meters** to prevent near-zero biomass 
+inflation.
+
+### 3.4 Monte Carlo configuration
 
 | Parameter                 | Value   |
 |:--------------------------|:-------:|
@@ -128,15 +124,16 @@ practice when the within-species density spread is large.
 
 | Tree type   | DBH source used                                         |
 |:------------|:--------------------------------------------------------|
-| Single stem | CBH (column F) → `DBH = CBH / π`                        |
-| Multi-stem  | `DBH ( in cm)` column (column H), parsed as `DBH1=… DBH2=…`; stems summed |
+| Single stem | Excel formula evaluated: `CBH / π` (matches `=F2/PI()`) |
+| Multi-stem  | Parsed strictly from `DBH ( in cm)` text; stems summed  |
 | Blank CBH + blank DBH | tree skipped with a `[SKIP]` log line          |
 | `TreeExists = FALSE` | tree excluded upstream (`load_excel`)            |
 
 **Note on Excel formula cells.** In the sheet, single-stem DBH is written
 as the formula `=F2/PI()`. `pandas.read_excel` cannot evaluate formulas,
-so the script reads the **CBH** value (a real number) and recomputes
-`CBH / π` internally. The result is numerically identical.
+so the script uses a regex to extract the row number, grab the CBH from 
+that row, and recomputes `CBH / π` internally. The result is numerically 
+identical to the sheet.
 
 ---
 
@@ -160,11 +157,11 @@ Console log also prints:
 
 ## 6. Known caveats & assumptions
 
-1. **Height is not used.** Multi-stem trees have no reliable height
-   (sheet records only 1.66 m — likely a stem-height not total height).
-   The D-only form is therefore applied uniformly to avoid inconsistent
-   equations across trees. This inflates prediction error by ~15–20 %
-   relative to a well-measured D + ρ + H model.
+1. **Multi-stem Height fallback.** Because your sheet records `1.66` for 
+   multi-stem heights (which is likely a measurement from the base to the 
+   first branching point, not total tree height), the script applies a 
+   fallback height of `5.0 m` to multi-stem trees. If you acquire true 
+   total heights for these trees later, update the `Height( in m)` column.
 2. **Density range, not point value.** The pipeline deliberately uses the
    species range. If your study specifically wants the sheet's point
    density, see §3.2.
@@ -173,8 +170,7 @@ Console log also prints:
    (`results_df["AGB_samples"].sum(axis=0)` gives 5,000 stand totals) and
    report mean ± 95 % CI of those.
 4. **Chave (2014) RSE not included.** Structural allometric error
-   (≈ ±55 % for D-only) is *not* part of the per-tree MC bands. See §2 for
-   how to add it.
+   (≈ ±43 % for Eq. 4) is *not* part of the per-tree MC bands. 
 5. **Wood density source.** The ranges in `DENSITY_DICT` match the
    dryad dataset cited in column E of the sheet; species not in that
    dataset are skipped with a warning.

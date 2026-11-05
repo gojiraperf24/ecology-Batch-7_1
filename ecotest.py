@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# ── 1. Wood density dictionary (g/cm³) — min/max per species ───────────────
+# ── 1. Wood density dictionary (g/cm³) ─────────────────────────────────────
 DENSITY_DICT = {
     "Cassia fistula":        [0.71, 0.96],
     "Pongamia pinnata":      [0.54, 0.67],
@@ -11,120 +11,115 @@ DENSITY_DICT = {
     "Terminalia bellirica":  [0.57, 0.90],
 }
 
-
 # ── 2. Helpers ─────────────────────────────────────────────────────────────
 def parse_dbh(val):
-    """Return list of positive floats found in a DBH/CBH cell."""
+    """Return list of positive floats found AFTER an equals sign."""
     if val is None:
         return []
-    if isinstance(val, (list, tuple, np.ndarray)):
-        out = []
-        for v in val:
-            out.extend(parse_dbh(v))
-        return out
-    if isinstance(val, (int, float, np.integer, np.floating)):
-        if pd.isna(val) or val <= 0:
-            return []
-        return [float(val)]
     s = str(val).strip()
     if s == "" or s.lower() in ("nan", "na", "none"):
         return []
-    return [float(n) for n in re.findall(r"\d+\.?\d*", s) if float(n) > 0]
+    
+    # This regex looks for numbers immediately following an '=' sign.
+    # It ignores the numbers in "DBH1", "DBH2", etc.
+    matches = re.findall(r"=\s*(\d+\.?\d*)", s)
+    
+    return [float(n) for n in matches if float(n) > 0]
 
-
-def chave_agb(dbh_cm, rho_gcm3):
-    """Chave et al. (2014) pantropical allometry, D-only form (no H term).
-    ln(AGB) = -1.803 - 0.976·ln(ρ) + 3.649·ln(D) - 0.0299·(ln D)²  -> kg
-    """
+def chave_agb_e4(dbh_cm, rho_gcm3, height_m):
+    """Chave et al. (2014) Eq. 4: 0.0673 * (ρ * D² * H)^0.976"""
     D   = np.asarray(dbh_cm,  dtype=float)
     rho = np.asarray(rho_gcm3, dtype=float)
-    lnD   = np.log(D)
-    lnrho = np.log(rho)
-    return np.exp(-1.803 - 0.976 * lnrho + 3.649 * lnD - 0.0299 * lnD**2)
+    H   = np.asarray(height_m, dtype=float)
+    return 0.0673 * (rho * (D**2) * H)**0.976
 
-
-def monte_carlo_agb_tree(dbh_cm_list, rho_min, rho_max,
+def monte_carlo_agb_tree(dbh_cm_list, rho_min, rho_max, height_m,
                          n_iter=5000, dbh_frac_err=0.02, seed=42):
-    """Per-tree MC: DBH ±2 % uniform, density uniform in [rho_min, rho_max].
-    Multi-stem trees: stems summed per iteration."""
+    """Per-tree MC: DBH ±2%, density uniform, height fixed."""
     rng = np.random.default_rng(seed)
     dbh = np.asarray(dbh_cm_list, dtype=float)
     if dbh.size == 0:
         return np.zeros(n_iter)
+    
     dbh_s = dbh * rng.uniform(1 - dbh_frac_err, 1 + dbh_frac_err,
                               size=(n_iter, dbh.size))
     rho_s = rng.uniform(rho_min, rho_max, size=(n_iter, dbh.size))
-    return chave_agb(dbh_s, rho_s).sum(axis=1)
+    
+    return chave_agb_e4(dbh_s, rho_s, height_m).sum(axis=1)
 
-
-def tree_dbh_cm(row):
-    """DBH (cm) list for one tree row.
-    Priority: (1) multi-stem 'DBH1=..' text, (2) numeric DBH,
-              (3) CBH / pi (single-stem rows where DBH is an Excel formula)."""
-    raw_dbh = row.get("DBH ( in cm)")
-    if isinstance(raw_dbh, str) and any(c.isdigit() for c in raw_dbh):
-        vals = parse_dbh(raw_dbh)
-        if vals:
-            return vals
-    if isinstance(raw_dbh, (int, float, np.integer, np.floating)) \
-            and not pd.isna(raw_dbh) and raw_dbh > 0:
-        return [float(raw_dbh)]
-    cbh = row.get("CBH(cm)")
-    if isinstance(cbh, (int, float, np.integer, np.floating)) \
-            and not pd.isna(cbh) and cbh > 0:
-        return [float(cbh) / np.pi]
-    cbh_vals = parse_dbh(cbh)
-    return [v / np.pi for v in cbh_vals]
-
-
-# ── 3. Excel loader (handles TreeExists as 1.0/0.0 float OR "TRUE"/"FALSE") ─
+# ── 3. Excel loader with Formula Evaluation ────────────────────────────────
 def load_excel(path):
     df = pd.read_excel(path, sheet_name=0)
-
     df = df.dropna(how="all")
     df = df[df["TreeID"].notna()].copy()
 
+    # Parse TreeExists (handles 1.0/0.0 or TRUE/FALSE)
     def to_bool(v):
-        if isinstance(v, (bool, np.bool_)):
-            return bool(v)
-        if v is None:
-            return False
+        if isinstance(v, (bool, np.bool_)): return bool(v)
         if isinstance(v, (int, float, np.integer, np.floating)):
-            if pd.isna(v):
-                return False
-            return v != 0
+            return not pd.isna(v) and v != 0
         return str(v).strip().upper() == "TRUE"
-
+        
     df["TreeExists"] = df["TreeExists"].map(to_bool)
     df["TreeSpecies"] = df["TreeSpecies"].astype(str).str.strip()
+    df = df[df["TreeExists"]].copy()
 
-    print(f"[load_excel] rows with TreeID  : {len(df)}")
-    print(f"[load_excel] TreeExists == True: {int(df['TreeExists'].sum())}")
-    missing = sorted(set(df.loc[df['TreeExists'], 'TreeSpecies']) -
-                     set(DENSITY_DICT.keys()))
-    if missing:
-        print(f"[load_excel] species NOT in DENSITY_DICT: {missing}")
+    # Evaluate Excel formulas in the DBH column safely
+    df["DBH_eval"] = np.nan
+    for idx, row in df.iterrows():
+        dbh_raw = str(row.get("DBH ( in cm)", "")).strip()
+        if dbh_raw.startswith("="):
+            # Excel formula like "=F2/PI()"
+            match = re.search(r"=([A-Z]+)(\d+)/PI\(\)", dbh_raw)
+            if match:
+                excel_row = int(match.group(2))
+                # Excel row 2 is pandas index 0, so subtract 2
+                pandas_idx = excel_row - 2
+                if pandas_idx in df.index:
+                    cbh_val = df.loc[pandas_idx, "CBH(cm)"]
+                    if pd.notna(cbh_val):
+                        df.at[idx, "DBH_eval"] = float(cbh_val) / np.pi
+                        
+    return df
 
-    return df[df["TreeExists"]].copy()
-
-
-# ── 4. Pipeline: one row per tree ─────────────────────────────────────────
+# ── 4. Pipeline ────────────────────────────────────────────────────────────
 def run_pipeline(df, n_iter=5000, seed=42):
     rows = []
     for _, row in df.iterrows():
         species = row["TreeSpecies"]
         if species not in DENSITY_DICT:
-            print(f"[SKIP] TreeID {row['TreeID']}: species '{species}' "
-                  f"not in DENSITY_DICT")
             continue
-        dbh_list = tree_dbh_cm(row)
+            
+        dbh_list = []
+        stem_count = row.get("Stem Count", 1)
+        
+        if pd.notna(stem_count) and float(stem_count) > 1:
+            # MULTI-STEM: parse strings like "DBH1=0.767 DBH2=0.318"
+            dbh_list = parse_dbh(row.get("DBH ( in cm)"))
+        else:
+            # SINGLE-STEAM: use the evaluated formula or fall back to CBH/pi
+            if pd.notna(row["DBH_eval"]):
+                dbh_list = [row["DBH_eval"]]
+            else:
+                cbh = row.get("CBH(cm)")
+                if pd.notna(cbh) and isinstance(cbh, (int, float)):
+                    dbh_list = [float(cbh) / np.pi]
+                    
         if not dbh_list:
-            print(f"[SKIP] TreeID {row['TreeID']}: no valid DBH/CBH")
             continue
 
         rho_min, rho_max = DENSITY_DICT[species]
-        samples = monte_carlo_agb_tree(dbh_list, rho_min, rho_max,
+        
+        # Get Height (fallback to 5.0 meters if blank or multi-stem 1.66m)
+        h_val = row.get("Height( in m)")
+        if pd.isna(h_val) or not isinstance(h_val, (int, float)):
+            height_m = 5.0
+        else:
+            height_m = float(h_val)
+
+        samples = monte_carlo_agb_tree(dbh_list, rho_min, rho_max, height_m,
                                        n_iter=n_iter, seed=seed)
+                                       
         rows.append({
             "TreeID":       int(row["TreeID"]),
             "Species":      species,
@@ -137,7 +132,6 @@ def run_pipeline(df, n_iter=5000, seed=42):
             "AGB_samples":  samples,
         })
     return pd.DataFrame(rows)
-
 
 # ── 5. Plots ───────────────────────────────────────────────────────────────
 def make_plots(results_df, out_prefix="agb"):
@@ -158,8 +152,7 @@ def make_plots(results_df, out_prefix="agb"):
            color="#4C72B0", edgecolor="black", linewidth=0.6,
            error_kw={"elinewidth": 1, "ecolor": "black"})
     ax.set_xticks(x)
-    ax.set_xticklabels(results_df["TreeID"].astype(int).astype(str),
-                       rotation=90)
+    ax.set_xticklabels(results_df["TreeID"].astype(int).astype(str), rotation=90)
     ax.set_xlabel("Tree ID")
     ax.set_ylabel("Aboveground biomass (kg)")
     ax.set_title("Per-tree AGB (mean ± 95 % Monte Carlo CI)")
@@ -171,24 +164,19 @@ def make_plots(results_df, out_prefix="agb"):
     n = len(results_df)
     n_cols = min(4, n)
     n_rows = int(np.ceil(n / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(3 * n_cols, 2.6 * n_rows),
-                             squeeze=False)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3 * n_cols, 2.6 * n_rows), squeeze=False)
     for i, (_, row) in enumerate(results_df.iterrows()):
         ax = axes[i // n_cols, i % n_cols]
-        ax.hist(row["AGB_samples"], bins=40, color="#55A868",
-                edgecolor="white", alpha=0.85)
+        ax.hist(row["AGB_samples"], bins=40, color="#55A868", edgecolor="white", alpha=0.85)
         ax.axvline(row["AGB_mean_kg"], color="black", lw=1.2, ls="--",
                    label=f"mean = {row['AGB_mean_kg']:.2f} kg")
-        ax.set_title(f"Tree {int(row['TreeID'])} — {row['Species']}",
-                     fontsize=8)
+        ax.set_title(f"Tree {int(row['TreeID'])} — {row['Species']}", fontsize=8)
         ax.set_xlabel("AGB (kg)", fontsize=8)
         ax.set_ylabel("Count", fontsize=8)
         ax.legend(fontsize=7, loc="upper right")
     for j in range(n, n_rows * n_cols):
         axes[j // n_cols, j % n_cols].set_visible(False)
-    fig.suptitle("Monte Carlo AGB distributions per tree", y=1.02,
-                 fontsize=11)
+    fig.suptitle("Monte Carlo AGB distributions per tree", y=1.02, fontsize=11)
     fig.tight_layout()
     fig.savefig(f"{out_prefix}_distributions.png")
     plt.close(fig)
@@ -207,49 +195,42 @@ def make_plots(results_df, out_prefix="agb"):
         return
 
     fig, ax = plt.subplots(figsize=(max(8, 0.35 * len(groups) + 2), 4.5))
-    bp = ax.boxplot(groups, patch_artist=True, widths=0.6,
-                    manage_ticks=False,
+    bp = ax.boxplot(groups, patch_artist=True, widths=0.6, manage_ticks=False,
                     medianprops={"color": "black"},
                     flierprops={"marker": "o", "markersize": 2, "alpha": 0.4})
     ax.set_xticks(np.arange(1, len(labels) + 1))
     ax.set_xticklabels(labels, rotation=90, fontsize=7)
-    colors = plt.colormaps["Set3"].resampled(len(groups))(
-        np.arange(len(groups)))
+    colors = plt.colormaps["Set3"].resampled(len(groups))(np.arange(len(groups)))
     for patch, c in zip(bp["boxes"], colors):
         patch.set_facecolor(c)
         patch.set_edgecolor("black")
     ax.set_xlabel("Tree ID")
     ax.set_ylabel("Aboveground biomass (kg)")
-    ax.set_title("Per-tree AGB uncertainty — Monte Carlo "
-                 "(Chave et al., 2014)")
+    ax.set_title("Per-tree AGB uncertainty — Monte Carlo (Chave et al., 2014)")
     fig.tight_layout()
     fig.savefig(f"{out_prefix}_per_tree_boxplot.png")
     plt.close(fig)
 
-    print(f"Figures saved: {out_prefix}_per_tree_ci.png, "
-          f"{out_prefix}_distributions.png, "
-          f"{out_prefix}_per_tree_boxplot.png")
-
+    print(f"Figures saved: {out_prefix}_per_tree_ci.png, {out_prefix}_distributions.png, {out_prefix}_per_tree_boxplot.png")
 
 # ── 6. Main ────────────────────────────────────────────────────────────────
 def main():
     excel_path = "Eco_Report_Part1_v1 (1).xlsx"
-
     df = load_excel(excel_path)
-    print(f"Loaded {len(df)} living tree(s) from {excel_path}")
-
+    
     results = run_pipeline(df, n_iter=5000, seed=42)
     if results.empty:
         print("No trees with valid DBH — nothing to plot.")
         return
 
+    # Print and save summary
     summary = results.drop(columns=["AGB_samples"]).round(3)
     print("\n=== AGB summary (Chave et al., 2014; Monte Carlo) ===")
     print(summary.to_string(index=False))
     summary.to_csv("agb_summary.csv", index=False)
 
+    # Generate plots
     make_plots(results, out_prefix="agb")
-
 
 if __name__ == "__main__":
     main()
