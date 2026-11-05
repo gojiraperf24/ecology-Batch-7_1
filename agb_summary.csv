@@ -1,0 +1,24 @@
+TreeID,Species,N_stems,DBH_mean_cm,AGB_mean_kg,AGB_sd_kg,AGB_p2.5_kg,AGB_p97.5_kg
+301,Pongamia pinnata,1,4.234,49.145,3.573,42.848,56.302
+302,Terminalia bellirica,4,1.005,3.069,0.381,2.488,3.811
+303,Terminalia bellirica,1,6.239,163.178,21.966,128.803,207.145
+304,Terminalia bellirica,1,4.011,33.958,4.574,26.798,43.123
+305,Pongamia pinnata,1,3.756,32.073,2.334,27.96,36.748
+306,Pongamia pinnata,10,1.771,147.117,7.331,133.833,161.761
+307,Cassia fistula,1,5.889,116.324,10.894,97.953,138.03
+308,Pongamia pinnata,1,3.788,33.054,2.405,28.816,37.871
+309,Pongamia pinnata,1,5.029,90.698,6.589,79.092,103.892
+310,Terminalia bellirica,1,6.907,233.877,31.479,184.618,296.861
+311,Pongamia pinnata,1,3.279,19.73,1.436,17.198,22.607
+312,Cassia fistula,1,7.576,283.442,26.524,238.74,336.261
+313,Pongamia pinnata,4,1.243,4.128,0.249,3.692,4.615
+314,Terminalia bellirica,1,9.199,642.115,86.389,506.95,814.79
+316,Cassia fistula,1,4.647,50.195,4.704,42.259,59.573
+317,Swietenia mahagoni,1,8.085,435.811,55.473,347.96,546.559
+319,Cassia fistula,1,1.91,2.073,0.195,1.744,2.462
+320,Pongamia pinnata,4,2.596,111.49,7.604,98.384,126.69
+321,Swietenia mahagoni,1,6.175,168.242,21.424,134.308,211.061
+322,Cassia fistula,1,3.565,19.507,1.83,16.42,23.157
+323,Pongamia pinnata,1,3.215,18.393,1.339,16.032,21.075
+324,Pongamia pinnata,4,1.37,4.981,0.26,4.511,5.501
+325,Pongamia pinnata,1,4.425,57.507,4.18,50.142,65.88
